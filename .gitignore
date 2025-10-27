@@ -1,0 +1,19 @@
+# Secrets/Env
+.env
+*.key
+*.pem
+GIT_TOKEN
+
+# Logs/Temp
+*.log
+/var/log/n8n_backup.log
+*.tmp
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# n8n (no creds export)
+n8n-backups/credentials*.json
