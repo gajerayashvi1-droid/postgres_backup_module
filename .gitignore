@@ -1,5 +1,6 @@
 # Secrets/Env
 .env
+.env.local
 *.key
 *.pem
 GIT_TOKEN
@@ -9,11 +10,14 @@ GIT_TOKEN
 /var/log/n8n_backup.log
 *.tmp
 .DS_Store
+*.swp
 
 # IDE
 .vscode/
 .idea/
-*.swp
 
-# n8n (no creds export)
+# n8n Sensitives (no creds in exports)
 n8n-backups/credentials*.json
+
+# Pruned Old (script handles)
+# n8n-backups/*-[0-9]{4}-[0-9]{2}-[0-9]{2}_old.*

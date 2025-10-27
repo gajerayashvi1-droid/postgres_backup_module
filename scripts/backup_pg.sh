@@ -30,7 +30,7 @@ fi
 # Defaults (override via env or args)
 DATE="${1:-$(date +%F)}"
 RETENTION="${RETENTION:-7}"
-BACKUP_DIR="${BACKUP_DIR:-$(pwd)/n8n-backups}"
+BACKUP_DIR="${BACKUP_DIR:-$(pwd./cron/n8n-backups}"
 N8N_URL="${N8N_URL:-http://localhost:5678}"
 N8N_API_KEY="${N8N_API_KEY}"  # Preferred; fallback to basic auth
 POSTGRES_HOST="${POSTGRES_HOST:-postgres}"
@@ -161,11 +161,11 @@ git_commit() {
   fi
 
   # Add changes (updated path post-refactor)
-  git add n8n-backups/ || error "Git add failed (gitignore or path issue)."
+  git add cron/n8n-backups/ || error "Git add failed (gitignore or path issue)."
 
   # Skip unchanged (fallback logic; updated path)
-  if git diff-index --quiet HEAD -- n8n-backups/; then
-    info "No changes in n8n-backups/. Skip commit."
+  if git diff-index --quiet HEAD -- cron/n8n-backups/; then
+    info "No changes in cron/n8n-backups/. Skip commit."
     return 0
   fi
 
