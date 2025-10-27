@@ -15,10 +15,22 @@ else
 fi
 set +a
 
+ENV_BRANCH="${ENV_BRANCH:-main}"
+info "Using branch: $ENV_BRANCH for backups."  # Assumes your info() function; replace with echo -e "\033[1;33mINFO: ...\033[0m" if not.
+
+# Switch/Create/Pull Branch (non-interactive for CI/cron)
+if ! git ls-remote --exit-code --heads origin "$ENV_BRANCH" >/dev/null 2>&1; then
+  git checkout -b "$ENV_BRANCH" || { echo -e "\033[0;31mERROR: Failed to create branch $ENV_BRANCH.\033[0m" >&2; exit 1; }
+  echo -e "\033[1;33mINFO: Created new env branch: $ENV_BRANCH.\033[0m"
+else
+  git checkout "$ENV_BRANCH" || { echo -e "\033[0;31mERROR: Failed to switch to branch $ENV_BRANCH.\033[0m" >&2; exit 1; }
+  git pull origin "$ENV_BRANCH" --ff-only || { echo -e "\033[0;31mERROR: Pull failed on $ENV_BRANCH (conflicts?). Manual merge needed.\033[0m" >&2; exit 1; }
+fi
+
 # Defaults (override via env or args)
 DATE="${1:-$(date +%F)}"
 RETENTION="${RETENTION:-7}"
-BACKUP_DIR="${BACKUP_DIR:-/backups}"
+BACKUP_DIR="${BACKUP_DIR:-$(pwd)/n8n-backups}"
 N8N_URL="${N8N_URL:-http://localhost:5678}"
 N8N_API_KEY="${N8N_API_KEY}"  # Preferred; fallback to basic auth
 POSTGRES_HOST="${POSTGRES_HOST:-postgres}"
@@ -28,6 +40,9 @@ POSTGRES_PASSWORD="${POSTGRES_PASSWORD}"
 POSTGRES_DB="${POSTGRES_DB:-n8n}"
 GIT_REPO="${GIT_REPO:-origin main}"
 LOG_FILE="${LOG_FILE:-/var/log/n8n_backup.log}"
+GIT_REPO_URL="${GIT_REPO_URL:-https://github.com/gajerayashvi1-droid/postgres_backup_module.git}"  # Dynamic repo URL
+GIT_TOKEN="${GIT_TOKEN}"  # Required for private; error if empty
+GIT_REPO="${GIT_REPO:-origin main}"
 mkdir -p "$BACKUP_DIR/workflows/$DATE"
 
 # Colors for logging
@@ -77,21 +92,34 @@ check_deps() {
 }
 
 # Function: Backup PostgreSQL via pg_dump
+# Function: Backup PostgreSQL via pg_dump (inside container for network access)
 backup_postgres() {
-  local dump_file="$BACKUP_DIR/n8n_backup_$DATE.sql"
-  info "Dumping PostgreSQL database to $dump_file"
+  local container_name="postgres_backup_module-postgres-1"  # Full Compose name; adjust if project changes
+  local dump_file="$BACKUP_DIR/n8n_backup_$DATE.sql.gz"
   
-  PGPASSWORD="$POSTGRES_PASSWORD" pg_dump \
-    --host="$POSTGRES_HOST" \
-    --port="$POSTGRES_PORT" \
-    --username="$POSTGRES_USER" \
-    --dbname="$POSTGRES_DB" \
+  # Check container exists and running
+  if ! docker ps --format "table {{.Names}}" | grep -q "$container_name"; then
+    error "Container $container_name not running. Run 'docker compose up -d'."
+  fi
+  
+  info "Dumping PostgreSQL database inside $container_name to $dump_file"
+  
+  # Run pg_dump in container, pipe to gzip on host
+  if ! docker exec "$container_name" bash -c "PGPASSWORD='${POSTGRES_PASSWORD}' pg_dump \
+    --username='${POSTGRES_USER}' \
+    --dbname='${POSTGRES_DB}' \
     --format=plain \
-    --verbose \
-    --file="$dump_file" || error "pg_dump failed. Check credentials/host."
+    --verbose" | gzip > "$dump_file"; then
+    error "pg_dump via docker exec failed. Check password/DB (docker logs $container_name)."
+  fi
   
-  gzip -f "$dump_file"  # Compress
-  success "PostgreSQL backup completed: $dump_file.gz"
+  # Verify output file not empty
+  if [[ ! -s "$dump_file" ]]; then
+    error "Backup file empty: $dump_file. Check pg_dump output (docker logs $container_name)."
+  fi
+  
+  local size=$(stat -c%s "$dump_file" 2>/dev/null || echo 0)
+  success "PostgreSQL backup completed: $dump_file (${size} bytes)"
 }
 
 # Function: Export n8n workflows via API
@@ -121,26 +149,40 @@ export_workflows() {
   fi
 }
 
-# Function: Commit to Git (only if changes)
+# Function: Commit to Git (only if changes; private repo support)
 git_commit() {
-  local msg="Auto backup $DATE $(date '+%T')"
-  
-  # Add backups (ignore .env, logs)
-  git add "$BACKUP_DIR" || error "Git add failed (check .gitignore)."
-  
-  # Check for changes
-  if git diff-index --quiet HEAD -- "$BACKUP_DIR"; then
-    info "No changes in backups. Skipping commit."
+  local msg="Auto backup $DATE $(date '+%T') [CI: $ENV_BRANCH]"
+  local remote="origin"
+  local branch="$ENV_BRANCH"  # CI: Use ENV_BRANCH (main/dev/staging/prod); set post-.env load
+
+  # Token check (from .env)
+  if [[ -z "$GIT_TOKEN" ]]; then
+    error "GIT_TOKEN missing in .env. Add PAT with 'repo' scope for private repo."
+  fi
+
+  # Add changes (updated path post-refactor)
+  git add n8n-backups/ || error "Git add failed (gitignore or path issue)."
+
+  # Skip unchanged (fallback logic; updated path)
+  if git diff-index --quiet HEAD -- n8n-backups/; then
+    info "No changes in n8n-backups/. Skip commit."
     return 0
   fi
-  
-  git commit -m "$msg" || error "Git commit failed."
-  if [[ -n "$GIT_TOKEN" ]]; then
-    git remote set-url origin https://$GIT_TOKEN@github.com/your_username/your_repo.git  # If token needed
+
+  git commit -m "$msg" || error "Commit failed."
+
+  # Update remote URL with token if needed (uses GIT_REPO_URL)
+  local base_url="${GIT_REPO_URL#https://}"
+  local auth_url="https://${GIT_TOKEN}@${base_url}"
+
+  if ! git remote get-url "$remote" | grep -q "$GIT_TOKEN"; then
+    git remote set-url "$remote" "$auth_url" || error "Set remote URL failed."
   fi
-  git push "$GIT_REPO" || error "Git push failed. Check token/permissions."
-  
-  success "Committed and pushed: $msg"
+
+  # Explicit push (uses $branch var; fixes 'origin main' by dynamic branch)
+  git push "$remote" "$branch" || error "Push failed. Test manual: git push origin $ENV_BRANCH."
+
+  success "Pushed to $GIT_REPO_URL ($branch): $msg"
 }
 
 # Function: Prune old backups (retention policy)
