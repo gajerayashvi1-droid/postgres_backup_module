@@ -1,0 +1,9 @@
+# n8n PostgreSQL Backup Cron Job
+# Runs daily at 9:00 PM IST (21:00) to backup n8n database and workflows
+# 
+# Schedule: Every day at 21:00 (9 PM)
+# User: root (or your deployment user)
+# Script: Executes backup_pg.sh with environment variables loaded
+# Logs: Appends to /var/log/n8n_backup.log
+
+0 2 * * * root cd /root/postgres_backup_module && source .env && ./scripts/backup_pg.sh >> /var/log/n8n_backup.log 2>&1
